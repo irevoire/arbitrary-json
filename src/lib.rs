@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
