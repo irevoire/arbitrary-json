@@ -1,4 +1,24 @@
-#![doc = include_str!("../README.md")]
+//! Arbitrary JSON
+//! ==============
+//!
+//! This crate provide a compatibility layer between
+//! [serde_json](https://github.com/serde-rs/json) and
+//! [arbitrary](https://github.com/rust-fuzz/arbitrary).
+//! This allow you to generate random valid json when fuzzing your rust code. See
+//! the following example:
+//!
+//! ```ignore
+//! #![no_main]
+//! use arbitrary_json::ArbitraryValue;
+//! use libfuzzer_sys::fuzz_target;
+//!
+//! fuzz_target!(|data: ArbitraryValue| {
+//!     // call your very complex code here
+//!     if data["truc"] == serde_json::json!(42) {
+//!         panic!("Found the magic value");
+//!     }
+//! });
+//! ```
 
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
@@ -27,18 +47,8 @@ impl<'a> Arbitrary<'a> for ArbitraryValue {
                 Value::Number(number)
             }
             3 => Value::String(u.arbitrary()?),
-            4 => Value::Array(
-                u.arbitrary_iter()?
-                    .map(|result| result.map(|json: ArbitraryValue| json.0))
-                    .collect::<Result<Vec<Value>>>()?,
-            ),
-            5 => Value::Object(
-                u.arbitrary_iter()?
-                    .map(|result| {
-                        result.map(|(key, value): (String, ArbitraryValue)| (key, value.0))
-                    })
-                    .collect::<Result<Map<String, Value>>>()?,
-            ),
+            4 => Value::Array(u.arbitrary::<ArbitraryArray>()?.into()),
+            5 => Value::Object(u.arbitrary::<ArbitraryObject>()?.into()),
             _ => unreachable!(),
         };
 
@@ -46,34 +56,70 @@ impl<'a> Arbitrary<'a> for ArbitraryValue {
     }
 }
 
-impl Deref for ArbitraryValue {
-    type Target = Value;
+#[derive(Clone)]
+pub struct ArbitraryObject(Map<String, Value>);
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<'a> Arbitrary<'a> for ArbitraryObject {
+    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
+        let map = u
+            .arbitrary_iter()?
+            .map(|result| result.map(|(key, value): (String, ArbitraryValue)| (key, value.0)))
+            .collect::<Result<Map<String, Value>>>()?;
+
+        Ok(ArbitraryObject(map))
     }
 }
 
-impl DerefMut for ArbitraryValue {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+#[derive(Clone)]
+pub struct ArbitraryArray(Vec<Value>);
+
+impl<'a> Arbitrary<'a> for ArbitraryArray {
+    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
+        let array = u
+            .arbitrary_iter()?
+            .map(|result| result.map(|json: ArbitraryValue| json.0))
+            .collect::<Result<Vec<Value>>>()?;
+
+        Ok(ArbitraryArray(array))
     }
 }
 
-impl From<Value> for ArbitraryValue {
-    fn from(value: Value) -> Self {
-        ArbitraryValue(value)
-    }
+macro_rules! impl_derefrom {
+    ($arbitrary:ty, $serde:ty) => {
+        impl Deref for $arbitrary {
+            type Target = $serde;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl DerefMut for $arbitrary {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl From<$serde> for $arbitrary {
+            fn from(value: $serde) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<$arbitrary> for $serde {
+            fn from(value: $arbitrary) -> Self {
+                value.0
+            }
+        }
+
+        impl Debug for $arbitrary {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
 }
 
-impl From<ArbitraryValue> for Value {
-    fn from(value: ArbitraryValue) -> Self {
-        value.0
-    }
-}
-
-impl Debug for ArbitraryValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+impl_derefrom!(ArbitraryValue, Value);
+impl_derefrom!(ArbitraryObject, Map<String, Value>);
+impl_derefrom!(ArbitraryArray, Vec<Value>);
